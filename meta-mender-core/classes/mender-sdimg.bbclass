@@ -50,6 +50,8 @@ inherit image_types
 
 addtask do_rootfs_wicenv after do_image before do_image_sdimg
 
+IMAGE_DEPENDS_sdimg += "${IMAGE_DEPENDS_wic} wic-tools"
+
 python() {
     fslist = d.getVar('IMAGE_FSTYPES', None).split()
     for fs in fslist:
@@ -104,18 +106,6 @@ IMAGE_CMD_sdimg() {
     # exist.
     mkdir -p "${IMAGE_ROOTFS}"
 
-    # Round up to nearest MB.
-    boot_env_size_mb=$(expr \( ${MENDER_STORAGE_RESERVED_RAW_SPACE} + 1048575 \) / 1048576)
-
-    REMAINING_SIZE=$(expr ${MENDER_STORAGE_TOTAL_SIZE_MB} - \
-                          ${MENDER_BOOT_PART_SIZE_MB} - \
-                          ${MENDER_DATA_PART_SIZE_MB} - \
-                          ${MENDER_PARTITIONING_OVERHEAD_MB} - \
-                          $boot_env_size_mb)
-    CALC_ROOTFS_SIZE=$(expr $REMAINING_SIZE / 2)
-
-    MENDER_PARTITION_ALIGNMENT_KB=$(expr ${MENDER_PARTITION_ALIGNMENT_MB} \* 1024)
-
     rm -rf "${WORKDIR}/data" || true
     mkdir -p "${WORKDIR}/data"
 
@@ -137,6 +127,10 @@ IMAGE_CMD_sdimg() {
     wks="${WORKDIR}/mender-sdimg.wks"
     rm -f "$wks"
     if [ -n "${IMAGE_BOOTLOADER_FILE}" ]; then
+        if [ $(expr ${IMAGE_BOOTLOADER_BOOTSECTOR_OFFSET} % 2) -ne 0 ]; then
+            bbfatal "IMAGE_BOOTLOADER_BOOTSECTOR_OFFSET must be aligned to kB" \
+                    "boundary (an even number)."
+        fi
         bootloader_align_kb=$(expr $(expr ${IMAGE_BOOTLOADER_BOOTSECTOR_OFFSET} \* 512) / 1024)
         bootloader_size=$(stat -c '%s' "${DEPLOY_DIR_IMAGE}/${IMAGE_BOOTLOADER_FILE}")
         bootloader_end=$(expr $bootloader_align_kb \* 1024 + $bootloader_size)
@@ -160,17 +154,21 @@ EOF
     fi
 
     cat >> "$wks" <<EOF
-part /boot   --source bootimg-partition --ondisk mmcblk0 --fstype=vfat --label boot --align $MENDER_PARTITION_ALIGNMENT_KB --active --fixed-size ${MENDER_BOOT_PART_SIZE_MB}
-part /       --source rootfs --ondisk mmcblk0 --fstype=$FSTYPE --label primary --align $MENDER_PARTITION_ALIGNMENT_KB --fixed-size $CALC_ROOTFS_SIZE
-part         --source rootfs --ondisk mmcblk0 --fstype=$FSTYPE --label secondary --align $MENDER_PARTITION_ALIGNMENT_KB --fixed-size $CALC_ROOTFS_SIZE
-part /data   --source fsimage --sourceparams=file="${WORKDIR}/data.$FSTYPE" --ondisk mmcblk0 --fstype=$FSTYPE --label data --align $MENDER_PARTITION_ALIGNMENT_KB --fixed-size ${MENDER_DATA_PART_SIZE_MB}
+part /boot   --source bootimg-partition --ondisk mmcblk0 --fstype=vfat --label boot --align ${MENDER_PARTITION_ALIGNMENT_KB} --active --fixed-size ${MENDER_BOOT_PART_SIZE_MB}
+part /       --source rootfs --ondisk mmcblk0 --fstype=$FSTYPE --label primary --align ${MENDER_PARTITION_ALIGNMENT_KB} --fixed-size ${MENDER_CALC_ROOTFS_SIZE}k
+part         --source rootfs --ondisk mmcblk0 --fstype=$FSTYPE --label secondary --align ${MENDER_PARTITION_ALIGNMENT_KB} --fixed-size ${MENDER_CALC_ROOTFS_SIZE}k
+part /data   --source rawcopy --sourceparams=file="${WORKDIR}/data.$FSTYPE" --ondisk mmcblk0 --fstype=$FSTYPE --label data --align ${MENDER_PARTITION_ALIGNMENT_KB} --fixed-size ${MENDER_DATA_PART_SIZE_MB}
 EOF
+
+    echo "### Contents of wks file ###"
+    cat "$wks"
+    echo "### End of contents of wks file ###"
 
     # Call WIC
     outimgname="${DEPLOY_DIR_IMAGE}/${IMAGE_NAME}.sdimg"
     wicout="${IMGDEPLOYDIR}/${IMAGE_NAME}-sdimg"
-    BUILDDIR="${TOPDIR}" wic create "$wks" --vars "${STAGING_DIR_TARGET}/imgdata/" -e "${IMAGE_BASENAME}" -o "$wicout/" ${WIC_CREATE_EXTRA_ARGS}
-    mv "$wicout/build/$(basename "${wks%.wks}")"*.direct "$outimgname"
+    BUILDDIR="${TOPDIR}" wic create "$wks" --vars "${STAGING_DIR}/${MACHINE}/imgdata/" -e "${IMAGE_BASENAME}" -o "$wicout/" ${WIC_CREATE_EXTRA_ARGS}
+    mv "$wicout/$(basename "${wks%.wks}")"*.direct "$outimgname"
     rm -rf "$wicout/"
 
     ln -sfn "${IMAGE_NAME}.sdimg" "${DEPLOY_DIR_IMAGE}/${IMAGE_BASENAME}-${MACHINE}.sdimg"

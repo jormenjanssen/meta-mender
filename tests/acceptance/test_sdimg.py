@@ -23,29 +23,6 @@ import re
 # Make sure common is imported after fabric, because we override some functions.
 from common import *
 
-e2cp_installed = subprocess.call(["which", "e2cp"]) == 0
-
-class EmbeddedBootloader:
-    loader = None
-    offset = 0
-
-    def __init__(self, loader, offset):
-        self.loader = loader
-        self.offset = offset
-
-@pytest.fixture(scope="session")
-def embedded_bootloader(bitbake_variables):
-    loader_base = bitbake_variables['IMAGE_BOOTLOADER_FILE']
-    loader_dir = bitbake_variables['DEPLOY_DIR_IMAGE']
-    loader = None
-    offset = int(bitbake_variables['IMAGE_BOOTLOADER_BOOTSECTOR_OFFSET']) * 512
-
-    if loader_base is not None and loader_base != "":
-        loader = os.path.join(loader_dir, loader_base)
-
-    return EmbeddedBootloader(loader, offset)
-
-
 def align_up(bytes, alignment):
     """Rounds bytes up to nearest alignment."""
     return (int(bytes) + int(alignment) - 1) / int(alignment) * int(alignment)
@@ -69,39 +46,12 @@ def extract_partition(sdimg, number):
 
 
 class TestSdimg:
-    def test_bootloader_embed(self, embedded_bootloader, latest_sdimg):
-        """Test that IMAGE_BOOTLOADER_FILE causes the bootloader to be embedded
-        correctly in the resulting sdimg. If the variable has not been defined,
-        the test is skipped."""
-
-        if embedded_bootloader.loader is None:
-            pytest.skip("No embedded bootloader specified")
-
-        original = os.open(embedded_bootloader.loader, os.O_RDONLY)
-        embedded = os.open(latest_sdimg, os.O_RDONLY)
-        os.lseek(embedded, embedded_bootloader.offset, 0)
-
-        checked = 0
-        block_size = 4096
-        while True:
-            org_read = os.read(original, block_size)
-            org_read_size = len(org_read)
-            emb_read = os.read(embedded, org_read_size)
-
-            assert(org_read == emb_read), "Embedded bootloader is not identical to the file specified in IMAGE_BOOTLOADER_FILE"
-
-            if org_read_size < block_size:
-                break
-
-        os.close(original)
-        os.close(embedded)
-
     def test_total_size(self, bitbake_variables, latest_sdimg):
         """Test that the total size of the sdimg is correct."""
 
         total_size_actual = os.stat(latest_sdimg).st_size
         total_size_max_expected = int(bitbake_variables['MENDER_STORAGE_TOTAL_SIZE_MB']) * 1024 * 1024
-        total_overhead = int(bitbake_variables['MENDER_PARTITIONING_OVERHEAD_MB']) * 1024 * 1024
+        total_overhead = int(bitbake_variables['MENDER_PARTITIONING_OVERHEAD_KB']) * 1024
 
         assert(total_size_actual <= total_size_max_expected)
         assert(total_size_actual >= total_size_max_expected - total_overhead)
@@ -130,10 +80,10 @@ class TestSdimg:
 
         fdisk.wait()
 
-        alignment = int(bitbake_variables['MENDER_PARTITION_ALIGNMENT_MB']) * 1024 * 1024
+        alignment = int(bitbake_variables['MENDER_PARTITION_ALIGNMENT_KB']) * 1024
         uboot_env_size = os.stat(os.path.join(bitbake_variables["DEPLOY_DIR_IMAGE"], "uboot.env")).st_size
         total_size = int(bitbake_variables['MENDER_STORAGE_TOTAL_SIZE_MB']) * 1024 * 1024
-        part_overhead = int(bitbake_variables['MENDER_PARTITIONING_OVERHEAD_MB']) * 1024 * 1024
+        part_overhead = int(bitbake_variables['MENDER_PARTITIONING_OVERHEAD_KB']) * 1024
         boot_part_size = int(bitbake_variables['MENDER_BOOT_PART_SIZE_MB']) * 1024 * 1024
         data_part_size = int(bitbake_variables['MENDER_DATA_PART_SIZE_MB']) * 1024 * 1024
 
@@ -147,31 +97,28 @@ class TestSdimg:
         # Subsequent partitions should start where previous one left off.
         assert(parts_start[1] == parts_end[0])
         assert(parts_start[2] == parts_end[1])
-        # Except data partition, which is an extended partition, and starts one
-        # full alignment higher.
-        assert(parts_start[4] == parts_end[2] + alignment)
+        assert(parts_start[3] == parts_end[2])
 
         # Partitions should extend for their size rounded up to alignment.
         # No set size for Rootfs partitions, so cannot check them.
         # Boot partition.
         assert(parts_end[0] == parts_start[0] + align_up(boot_part_size, alignment))
         # Data partition.
-        assert(parts_end[4] == parts_start[4] + align_up(data_part_size, alignment))
+        assert(parts_end[3] == parts_start[3] + align_up(data_part_size, alignment))
 
         # End of the last partition can be smaller than total image size, but
         # not by more than the calculated overhead..
-        assert(parts_end[4] <= total_size)
-        assert(parts_end[4] >= total_size - part_overhead)
+        assert(parts_end[3] <= total_size)
+        assert(parts_end[3] >= total_size - part_overhead)
 
 
-    @pytest.mark.skipif(not e2cp_installed, reason="Needs e2tools to be installed")
     def test_device_type(self, latest_sdimg, bitbake_variables, bitbake_path):
         """Test that device type file is correctly embedded."""
 
         try:
-            extract_partition(latest_sdimg, 5)
+            extract_partition(latest_sdimg, 4)
 
-            subprocess.check_call(["e2cp", "-p", "sdimg5.fs:mender/device_type", "."])
+            subprocess.check_call(["debugfs", "-R", "dump -p /mender/device_type device_type", "sdimg4.fs"])
 
             assert(os.stat("device_type").st_mode & 0777 == 0444)
 
@@ -192,43 +139,47 @@ class TestSdimg:
 
         finally:
             try:
-                os.remove("sdimg5.fs")
+                os.remove("sdimg4.fs")
                 os.remove("device_type")
             except:
                 pass
 
-    @pytest.mark.skipif(not e2cp_installed, reason="Needs e2tools to be installed")
     def test_data_ownership(self, latest_sdimg, bitbake_variables, bitbake_path):
         """Test that the owner of files on the data partition is root."""
 
         try:
-            extract_partition(latest_sdimg, 5)
+            extract_partition(latest_sdimg, 4)
 
             def check_dir(dir):
-                e2ls = subprocess.Popen(["e2ls", "-l", "sdimg5.fs:%s" % dir], stdout=subprocess.PIPE)
-                entries = e2ls.stdout.readlines()
-                e2ls.wait()
+                ls = subprocess.Popen(["debugfs", "-R" "ls -l -p %s" % dir, "sdimg4.fs"], stdout=subprocess.PIPE)
+                entries = ls.stdout.readlines()
+                ls.wait()
 
                 for entry in entries:
-                    columns = entry.split()
+                    entry = entry.strip()
 
-                    if len(columns) == 0:
-                        # e2ls might output empty lines too.
+                    if len(entry) == 0:
+                        # debugfs might output empty lines too.
                         continue
 
-                    assert(columns[2] == "0")
+                    columns = entry.split('/')
+
+                    if columns[1] == "0":
+                        # Inode 0 is some weird file inside lost+found, skip it.
+                        continue
+
                     assert(columns[3] == "0")
+                    assert(columns[4] == "0")
 
-                    mode = int(columns[1], 8)
-                    # Recurse into directories, but skip lost+found, which has
-                    # some weird issues with e2ls.
-                    if mode & 040000 and columns[7] != "lost+found":
-                        check_dir(os.path.join(dir, columns[7]))
+                    mode = int(columns[2], 8)
+                    # Recurse into directories.
+                    if mode & 040000 != 0 and columns[5] != "." and columns[5] != "..":
+                        check_dir(os.path.join(dir, columns[5]))
 
-            check_dir(".")
+            check_dir("/")
 
         finally:
             try:
-                os.remove("sdimg5.fs")
+                os.remove("sdimg4.fs")
             except:
                 pass
