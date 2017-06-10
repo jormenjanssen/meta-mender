@@ -1,6 +1,6 @@
 require mender.inc
 
-MENDER_BRANCH ?= "master"
+MENDER_BRANCH ?= "1.1.x"
 
 SRC_URI = "git://github.com/mendersoftware/mender;protocol=https;branch=${MENDER_BRANCH}"
 
