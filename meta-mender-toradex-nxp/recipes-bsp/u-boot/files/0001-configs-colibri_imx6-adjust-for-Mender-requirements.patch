@@ -1,0 +1,65 @@
+diff --git a/include/configs/colibri_imx6.h b/include/configs/colibri_imx6.h
+index af49bcc..af15b14 100644
+--- a/include/configs/colibri_imx6.h
++++ b/include/configs/colibri_imx6.h
+@@ -174,15 +174,16 @@
+ 	"imx6q-colibri-cam-eval-v3.dtb fat 0 1"
+ 
+ #define EMMC_BOOTCMD \
+-	"emmcargs=ip=off root=/dev/mmcblk0p2 rw,noatime rootfstype=ext3 " \
++	"emmcargs=ip=off root=/dev/mmcblk0p${mender_boot_part} rw,noatime rootfstype=ext4 " \
+ 		"rootwait\0" \
+-	"emmcboot=run setup; " \
++	"setemmcargs=setenv emmcargs ip=off root=/dev/mmcblk0p${mender_boot_part} rw,noatime rootfstype=ext4 rootwait\0" \
++	"emmcboot=run setup; run setemmcargs; " \
+ 		"setenv bootargs ${defargs} ${emmcargs} ${setupargs} " \
+ 		"${vidargs}; echo Booting from internal eMMC chip...; "	\
+-		"run emmcdtbload; load mmc 0:1 ${kernel_addr_r} " \
++		"run emmcdtbload; load mmc 0:${mender_boot_part} ${kernel_addr_r} " \
+ 		"${boot_file} && run fdt_fixup && " \
+ 		"bootm ${kernel_addr_r} ${dtbparam}\0" \
+-	"emmcdtbload=setenv dtbparam; load mmc 0:1 ${fdt_addr_r} " \
++	"emmcdtbload=setenv dtbparam; load mmc 0:${mender_boot_part} ${fdt_addr_r} " \
+ 		"${fdt_file} && setenv dtbparam \" - ${fdt_addr_r}\" && true\0"
+ 
+ #define MEM_LAYOUT_ENV_SETTINGS \
+@@ -228,14 +229,14 @@
+ 	"usbdtbload=setenv dtbparam; load usb 0:1 ${fdt_addr_r} " \
+ 		"${fdt_file} && setenv dtbparam \" - ${fdt_addr_r}\" && true\0"
+ 
+-#define FDT_FILE "imx6dl-colibri-eval-v3.dtb"
++#define FDT_FILE "/boot/imx6dl-colibri-rimote-manager-v3.dtb"
+ #define CONFIG_EXTRA_ENV_SETTINGS \
+ 	BOOTENV \
+ 	"bootcmd=run emmcboot ; echo ; echo emmcboot failed ; " \
+ 		"run distro_bootcmd ; " \
+ 		"usb start ;" \
+ 		"setenv stdout serial,vga ; setenv stdin serial,usbkbd\0" \
+-	"boot_file=uImage\0" \
++	"boot_file=/boot/uImage\0" \
+ 	"console=ttymxc0\0" \
+ 	"defargs=enable_wait_mode=off galcore.contiguousSize=50331648\0" \
+ 	"dfu_alt_info=" DFU_ALT_EMMC_INFO "\0" \
+@@ -263,6 +264,8 @@
+ 		"video=mxcfb1:off fbmem=8M\0 "
+ 
+ /* Miscellaneous configurable options */
++#define CONFIG_BOOTCOUNT_LIMIT
++#define CONFIG_BOOTCOUNT_ENV
+ #define CONFIG_SYS_LONGHELP
+ #define CONFIG_AUTO_COMPLETE
+ #undef CONFIG_SYS_CBSIZE
+@@ -299,13 +302,6 @@
+ 
+ #define CONFIG_ENV_IS_IN_MMC
+ 
+-#if defined(CONFIG_ENV_IS_IN_MMC)
+-/* Environment in eMMC, before config block at the end of 1st "boot sector" */
+-#define CONFIG_ENV_OFFSET		(-CONFIG_ENV_SIZE + \
+-					 CONFIG_TDX_CFG_BLOCK_OFFSET)
+-#define CONFIG_SYS_MMC_ENV_DEV		0
+-#define CONFIG_SYS_MMC_ENV_PART		1
+-#endif
+ 
+ #define CONFIG_OF_SYSTEM_SETUP
+ 
